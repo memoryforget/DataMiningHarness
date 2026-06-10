@@ -172,7 +172,6 @@ run_query_locally() {
   mkdir -p "$task_output_dir"
   rm -rf "$run_root"
   mkdir -p "$workspace/artifacts" "$claude_home" "$claude_config/skills" "$xdg_config" "$xdg_cache"
-  cp "$HARNESS_DIR/prompt.md" "$workspace/prompt.md"
   cp -a "$HARNESS_DIR/skills/mineru-pdf" "$claude_config/skills/mineru-pdf"
   cp "$CLAUDE_CONFIG_DIR/settings.json" "$claude_config/settings.json"
 

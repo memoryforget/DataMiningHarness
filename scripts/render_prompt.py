@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
+from pathlib import Path
 
-PROMPT_TEMPLATE = """
-Read prompt.md and follow it strictly.
 
-Data lake path: {{DATA_LAKE_PATH}}
-Query: "{{QUERY}}"
-"""
+SCRIPT_DIR = Path(__file__).resolve().parent
+HARNESS_DIR = SCRIPT_DIR.parent
+PROMPT_TEMPLATE_PATH = HARNESS_DIR / "prompt.md"
 
 
 def parse_args() -> argparse.Namespace:
@@ -18,12 +17,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def render_from_template(template: str, query: str, data_lake_path: str) -> str:
-    return template.replace("{{QUERY}}", query).replace("{{DATA_LAKE_PATH}}", data_lake_path)
+    return (
+        template.replace("{{analysis_query}}", query)
+        .replace("{{data_lake_path}}", data_lake_path)
+    )
 
 
 def main() -> int:
     args = parse_args()
-    text = render_from_template(PROMPT_TEMPLATE, args.query, args.data_lake_path)
+    text = render_from_template(
+        PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8"),
+        args.query,
+        args.data_lake_path,
+    )
     if not text.endswith("\n"):
         text += "\n"
     print(text, end="")

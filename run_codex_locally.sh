@@ -161,7 +161,6 @@ run_query_locally() {
   mkdir -p "$task_output_dir"
   rm -rf "$run_root"
   mkdir -p "$workspace/artifacts" "$codex_home/sqlite" "$codex_home/skills" "$xdg_config" "$xdg_cache"
-  cp "$HARNESS_DIR/prompt.md" "$workspace/prompt.md"
   cp -a "$HARNESS_DIR/skills/mineru-pdf" "$codex_home/skills/mineru-pdf"
   cp "$CODEX_HOME_HOST/config.toml" "$codex_home/config.toml"
   cp "$CODEX_HOME_HOST/auth.json" "$codex_home/auth.json"
