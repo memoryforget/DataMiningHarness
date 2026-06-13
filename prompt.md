@@ -31,14 +31,14 @@ Do not introduce external knowledge, prior assumptions, hidden labels, inferred 
 
 ## Working Style
 
-1. Read the task carefully.
+1. Read the task carefully and break the Analysis Query into explicit operations; use them as a checklist for the work and the report.
 2. Inspect the data lake structure to understand what files are available.
 3. Conduct comprehensive data analysis using all artifacts that you consider useful.
 4. Save all generated assets under `artifacts/`.
 5. Save the structured reproduction record to `artifacts/reproduction.json`.
 6. Write the final answer to `report.md`.
    The report should explain not only the conclusion, but also the key analytical steps that make the conclusion trustworthy.
-   For every conclusion that depends on data preparation or transformation, explicitly state the relevant fields, the rule that was applied, and the resulting effect on the analysis. Do not rely on vague summaries such as "cleaned", "normalized", "matched", "validated", or "filtered" without stating what was actually done.
+   For every conclusion that depends on data preparation or transformation, explicitly state the relevant fields, the rule that was applied, the resulting effect on the analysis, and the generated artifact paths used or produced by that operation. Do not rely on vague summaries such as "cleaned", "normalized", "matched", "validated", or "filtered" without stating what was actually done.
 
 ## Asset Management
 
@@ -51,34 +51,16 @@ Asset management is mandatory.
    - `artifacts/cleaned_data.csv`
    - `artifacts/analysis_summary.json`
    - `artifacts/extracted_pdf_text.md`
-3. Do not leave important outputs only in the terminal.
+3. Save inspection outputs that support file selection, row counts, schema decisions, cleaning rules, joins, filters, or conclusions under `artifacts/`; do not leave them only in the terminal.
 4. Do not rely on temporary files outside `artifacts/`.
-5. Every generated file that matters for the answer must be referenced in `artifacts/reproduction.json`.
+5. Every generated file cited by the report or needed to replay an operation must be referenced in `artifacts/reproduction.json`.
 6. If a step produces multiple files, list all relevant generated paths in the `OUTPUT_ARTIFACT` field.
 
 ## Reproducibility Rules
 
-Reproducibility is mandatory.
+Reproducibility is mandatory. The required final files are `report.md` and `artifacts/reproduction.json`. Any helper scripts, SQL files, notebooks, exported tables, extracted text, extracted images, logs, or intermediate summaries needed to support the report must be saved under `artifacts/`.
 
-Minimum requirements:
-
-1. The final report must be saved as:
-
-```text
-report.md
-```
-
-2. The structured reproduction record must be saved as:
-
-```text
-artifacts/reproduction.json
-```
-
-3. Any helper scripts, SQL files, notebooks, exported tables, extracted text, extracted images, logs, or intermediate summaries needed to support the report must be saved under:
-
-```text
-artifacts/
-```
+Do not include the process of creating `report.md` as a replay step; reproduction steps should recreate supporting artifacts only.
 
 ## Reproduction JSON Format
 
@@ -91,8 +73,8 @@ Each step must contain only the following fields:
   {
     "STEP": 1,
     "BASH": "command to run",
-    "INPUT_ARTIFACT": "input artifact path, list of input artifact paths, or \"NAN\" if no input artifact is needed",
-    "OUTPUT_ARTIFACT": "output artifact path, list of output artifact paths, or \"NAN\" if no output artifact is produced",
+    "INPUT_ARTIFACT": "input artifact path, list of input artifact paths, or \"NONE\" if no input artifact is needed",
+    "OUTPUT_ARTIFACT": "output artifact path, list of output artifact paths, or \"NONE\" if no output artifact is produced",
     "INTERMEDIATE_RESULT": "observable result after this step runs"
   }
 ]
@@ -104,11 +86,11 @@ Rules for `artifacts/reproduction.json`:
 2. `BASH` should be an executable shell command whenever possible. 
 3. For inspection-only steps, use commands such as `find`, `ls`, `head`, `grep`, `python`, or `cat`, and save important outputs under `artifacts/`. Avoid relying on optional utilities unless necessary.
 4. `INTERMEDIATE_RESULT` must describe the observable result of the step, such as discovered files, row counts, selected records, summary values, or validation status.
-5. `INPUT_ARTIFACT` should list only replay-required candidate-local inputs stored under `artifacts/`, such as helper scripts, SQL files, config files, templates, copied source snapshots, or prior intermediate outputs. If none are needed, set it to `NAN`.
-6. Do not list raw read-only data lake files, benchmark source files, or other external environment files in `INPUT_ARTIFACT`. If their content is needed by later replayed steps, first copy or extract the needed content into `artifacts/`, and then reference only that saved artifact.
-7. `OUTPUT_ARTIFACT` must list only the files directly created or modified by the current step. Use `artifacts/...` for generated files. If no file is produced, set it to `NAN`.
-8. All replayed intermediate steps and helper scripts must read candidate-local inputs only from `artifacts/` and write outputs only to `artifacts/`. Do not read from or write to other workspace files.
-9. The process of creating report.md shall not be included in the replay process.
+5. `INPUT_ARTIFACT` should list only replay-required local inputs stored under `artifacts/`, such as helper scripts, SQL files, copied source snapshots, or prior intermediate outputs. If none are needed, set it to `NONE`.
+6. Do not list raw read-only data lake files, benchmark source files, or other external environment files in `INPUT_ARTIFACT`; read them in the command or first extract/copy the needed content into `artifacts/` for later replay.
+7. `OUTPUT_ARTIFACT` must list only the files directly created or modified by the current step. Use `artifacts/...` for generated files. If no file is produced, set it to `NONE`.
+8. All replayed intermediate steps and helper scripts must read candidate-local inputs only from `artifacts/` and write outputs only to `artifacts/`. Do not read from or write to other workspace files. Use relative paths rooted at the current task workspace, such as `artifacts/...`; do not hardcode absolute paths, original candidate output directories, or any other workspace-external locations in helper scripts or replay commands.
+9. Do not include the process of creating `report.md` in the replay process.
 
 ## PDF Handling
 

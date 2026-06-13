@@ -47,7 +47,7 @@ def load_json(path: Path) -> Any:
 
 
 def normalize_artifact_field(value: Any, field_name: str) -> list[str]:
-    if value == "NAN":
+    if value == "NONE":
         return []
     if isinstance(value, str):
         if not value.strip():
@@ -60,7 +60,7 @@ def normalize_artifact_field(value: Any, field_name: str) -> list[str]:
                 raise ValueError(f"{field_name} list items must be non-empty strings")
             normalized.append(item)
         return normalized
-    raise ValueError(f"{field_name} must be a string, list of strings, or 'NAN'")
+    raise ValueError(f"{field_name} must be a string, list of strings, or 'NONE'")
 
 
 def ensure_schema(steps: Any) -> list[dict[str, Any]]:

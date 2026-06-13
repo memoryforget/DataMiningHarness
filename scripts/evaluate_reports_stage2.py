@@ -177,12 +177,12 @@ def build_judge_prompt(task: Task, report_text: str) -> str:
     }
     return f"""You are a strict benchmark judge.
 
-Evaluate whether the candidate report satisfies each hidden rubric using only the report itself.
+Evaluate whether the candidate report satisfies each rubric using only the report itself.
 Do not use external knowledge. Do not infer work that is not stated in the report.
-A rubric passes only if the report gives enough concrete evidence that the requirement was actually met.
-If the report is ambiguous or partial, mark the rubric as failed.
+A rubric passes only if the report gives concrete evidence that the requirement was actually met, including the relevant fields, operations, results, or artifact paths when applicable.
+If the report is ambiguous, partial, or only claims that work was done without evidence, mark the rubric as failed.
 
-Return strict JSON only. No markdown fences.
+Return strict JSON only. No markdown fences. Return exactly one rubric_results item for every rubric in Task metadata.
 
 Required output schema:
 {json.dumps(schema, ensure_ascii=False, indent=2)}
