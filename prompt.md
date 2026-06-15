@@ -86,11 +86,9 @@ Rules for `artifacts/reproduction.json`:
 2. `BASH` should be an executable shell command whenever possible. 
 3. For inspection-only steps, use commands such as `find`, `ls`, `head`, `grep`, `python`, or `cat`, and save important outputs under `artifacts/`. Avoid relying on optional utilities unless necessary.
 4. `INTERMEDIATE_RESULT` must describe the observable result of the step, such as discovered files, row counts, selected records, summary values, or validation status.
-5. `INPUT_ARTIFACT` should list only replay-required local inputs stored under `artifacts/`, such as helper scripts, SQL files, copied source snapshots, or prior intermediate outputs. If none are needed, set it to `NONE`.
-6. Do not list raw read-only data lake files, benchmark source files, or other external environment files in `INPUT_ARTIFACT`; read them in the command or first extract/copy the needed content into `artifacts/` for later replay.
-7. `OUTPUT_ARTIFACT` must list only the files directly created or modified by the current step. Use `artifacts/...` for generated files. If no file is produced, set it to `NONE`.
+5. `INPUT_ARTIFACT` must list every replay-local file or directory under `artifacts/` that the current step reads in order to produce its outputs. This includes helper scripts, SQL files, notebooks, copied source snapshots, extracted tables/text, cleaned datasets, configuration files, manifests, and prior intermediate outputs used by the command. If the command reads multiple artifact files, list all of them. If the step truly reads no prior local artifact, set `INPUT_ARTIFACT` to `NONE`.
+7. `OUTPUT_ARTIFACT` must list only the files directly created or modified by the current step. Use `artifacts/...` for generated files. If no file is produced, set it to `NONE`. Do not declare the same output path in multiple steps; if a later step modifies a file, write a new versioned path instead.
 8. All replayed intermediate steps and helper scripts must read candidate-local inputs only from `artifacts/` and write outputs only to `artifacts/`. Do not read from or write to other workspace files. Use relative paths rooted at the current task workspace, such as `artifacts/...`; do not hardcode absolute paths, original candidate output directories, or any other workspace-external locations in helper scripts or replay commands.
-9. Do not include the process of creating `report.md` in the replay process.
 
 ## PDF Handling
 

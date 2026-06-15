@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  run_codex_locally.sh \
+  run_opencode_locally.sh \
     --queries-json BENCHMARK_JSON \
     --output-dir DIR \
     [--limit N] \
@@ -13,7 +13,9 @@ Usage:
     [--jobs N] \
     [--debug] \
     [--model MODEL] \
-    [--codex-home DIR] \
+    [--opencode-bin PATH] \
+    [--opencode-config-dir DIR] \
+    [--opencode-extra-arg ARG]... \
     [--mineru-local-api-url URL] \
     [--tmp-root DIR] \
     [--activate-script FILE] \
@@ -27,26 +29,30 @@ USAGE
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS_DIR="$SCRIPT_DIR"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DEFAULT_CODEX_HOME="$WORKSPACE_ROOT/.codex"
 DEFAULT_ACTIVATE_SCRIPT="$WORKSPACE_ROOT/activate_my_base.sh"
 DEFAULT_NODE_ACTIVATE_SCRIPT="$WORKSPACE_ROOT/activate_my_node.sh"
+DEFAULT_OPENCODE_BIN="opencode"
+DEFAULT_OPENCODE_CONFIG_DIR="$WORKSPACE_ROOT/.opencode"
+
 QUERIES_JSON=""
 OUTPUT_DIR=""
 MODEL=""
-CODEX_HOME_HOST="$DEFAULT_CODEX_HOME"
+OPENCODE_BIN="$DEFAULT_OPENCODE_BIN"
+OPENCODE_CONFIG_DIR="$DEFAULT_OPENCODE_CONFIG_DIR"
 MINERU_LOCAL_API_URL=""
 LIMIT=""
 SKIP_EXISTING=0
 JOBS=1
 DEBUG_MODE=0
 RUN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)_$$"
-TMP_ROOT="$WORKSPACE_ROOT/tmp/codex-local-batch_$RUN_STAMP"
+TMP_ROOT="$WORKSPACE_ROOT/tmp/opencode-local-batch_$RUN_STAMP"
 ACTIVATE_SCRIPT="$DEFAULT_ACTIVATE_SCRIPT"
 NODE_ACTIVATE_SCRIPT="$DEFAULT_NODE_ACTIVATE_SCRIPT"
 CONDA_ENV_NAME="daagent"
 USE_CONDA_ACTIVATE=1
 USE_NODE_ACTIVATE=1
 FAIL_LOG=""
+OPENCODE_EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -57,7 +63,9 @@ while [[ $# -gt 0 ]]; do
     --jobs) JOBS="${2:?missing value for --jobs}"; shift 2 ;;
     --debug) DEBUG_MODE=1; shift ;;
     --model) MODEL="${2:?missing value for --model}"; shift 2 ;;
-    --codex-home) CODEX_HOME_HOST="${2:?missing value for --codex-home}"; shift 2 ;;
+    --opencode-bin) OPENCODE_BIN="${2:?missing value for --opencode-bin}"; shift 2 ;;
+    --opencode-config-dir) OPENCODE_CONFIG_DIR="${2:?missing value for --opencode-config-dir}"; shift 2 ;;
+    --opencode-extra-arg) OPENCODE_EXTRA_ARGS+=("${2:?missing value for --opencode-extra-arg}"); shift 2 ;;
     --mineru-local-api-url) MINERU_LOCAL_API_URL="${2:?missing value for --mineru-local-api-url}"; shift 2 ;;
     --tmp-root) TMP_ROOT="${2:?missing value for --tmp-root}"; shift 2 ;;
     --activate-script) ACTIVATE_SCRIPT="${2:?missing value for --activate-script}"; shift 2 ;;
@@ -84,16 +92,12 @@ if [[ ! -f "$QUERIES_JSON" ]]; then
   echo "Queries JSON does not exist: $QUERIES_JSON" >&2
   exit 1
 fi
-if [[ ! -d "$CODEX_HOME_HOST" ]]; then
-  echo "Codex home directory does not exist: $CODEX_HOME_HOST" >&2
+if [[ ! -d "$OPENCODE_CONFIG_DIR" ]]; then
+  echo "OpenCode config directory does not exist: $OPENCODE_CONFIG_DIR" >&2
   exit 1
 fi
-if [[ ! -f "$CODEX_HOME_HOST/config.toml" ]]; then
-  echo "Codex config not found: $CODEX_HOME_HOST/config.toml" >&2
-  exit 1
-fi
-if [[ ! -f "$CODEX_HOME_HOST/auth.json" ]]; then
-  echo "Codex auth not found: $CODEX_HOME_HOST/auth.json" >&2
+if [[ ! -f "$OPENCODE_CONFIG_DIR/opencode.json" ]]; then
+  echo "OpenCode config not found: $OPENCODE_CONFIG_DIR/opencode.json" >&2
   exit 1
 fi
 if [[ -n "$LIMIT" && ! "$LIMIT" =~ ^[0-9]+$ ]]; then
@@ -138,33 +142,35 @@ run_query_locally() {
   local prompt_text="$2"
   local task_output_dir="$OUTPUT_DIR/$query_id"
   local log_file="$task_output_dir/run.log"
+  local debug_log_file="$task_output_dir/debug.log"
   local status_file="$task_output_dir/exit_code.txt"
   local prompt_file="$task_output_dir/prompt.txt"
   local insights_file="$task_output_dir/report.md"
   local run_root="$TMP_ROOT/$query_id"
   local workspace="$run_root/workspace"
-  local codex_home="$run_root/codex-home"
-  local xdg_config="$run_root/.config"
-  local xdg_cache="$run_root/.cache"
+  local opencode_config="$workspace/.opencode"
+  local opencode_skills="$opencode_config/skills"
   local env_info_file="$task_output_dir/env_info.txt"
   local exit_code=0
   local -a cmd=(
-    codex exec -
-    --dangerously-bypass-approvals-and-sandbox
-    --skip-git-repo-check
-    -C "$workspace"
+    "$OPENCODE_BIN" run "$prompt_text"
+    --dangerously-skip-permissions
+    --print-logs
+    --log-level DEBUG
   )
 
   if [[ -n "$MODEL" ]]; then
-    cmd+=( -m "$MODEL" )
+    cmd+=(-m "$MODEL")
+  fi
+  if [[ ${#OPENCODE_EXTRA_ARGS[@]} -gt 0 ]]; then
+    cmd+=("${OPENCODE_EXTRA_ARGS[@]}")
   fi
 
   mkdir -p "$task_output_dir"
   rm -rf "$run_root"
-  mkdir -p "$workspace/artifacts" "$codex_home/sqlite" "$codex_home/skills" "$xdg_config" "$xdg_cache"
-  cp -a "$HARNESS_DIR/skills/mineru-pdf" "$codex_home/skills/mineru-pdf"
-  cp "$CODEX_HOME_HOST/config.toml" "$codex_home/config.toml"
-  cp "$CODEX_HOME_HOST/auth.json" "$codex_home/auth.json"
+  mkdir -p "$workspace/artifacts" "$opencode_config" "$opencode_skills"
+  cp -a "$HARNESS_DIR/skills/mineru-pdf" "$opencode_skills/mineru-pdf"
+  cp "$OPENCODE_CONFIG_DIR/opencode.json" "$opencode_config/opencode.json"
 
   : > "$log_file"
   printf '%s\n' "$prompt_text" > "$prompt_file"
@@ -173,12 +179,9 @@ run_query_locally() {
   set +e
   (
     set -- # Clear positional parameters to avoid passing them to sourced scripts
-    export CODEX_HOME="$codex_home"
-    export CODEX_SQLITE_HOME="$codex_home/sqlite"
-    export XDG_CONFIG_HOME="$xdg_config"
-    export XDG_CACHE_HOME="$xdg_cache"
     export MINERU_LOCAL_API_URL="$MINERU_LOCAL_API_URL"
     export TASK_OUTPUT_DIR="$task_output_dir"
+    export IS_SANDBOX=1
     if [[ $USE_CONDA_ACTIVATE -eq 1 ]]; then
       source "$ACTIVATE_SCRIPT"
       conda activate "$CONDA_ENV_NAME"
@@ -186,8 +189,8 @@ run_query_locally() {
     if [[ $USE_NODE_ACTIVATE -eq 1 ]]; then
       source "$NODE_ACTIVATE_SCRIPT"
     fi
-    if ! command -v codex >/dev/null 2>&1; then
-      echo "codex is not available after environment activation" >&2
+    if ! command -v "$OPENCODE_BIN" >/dev/null 2>&1; then
+      echo "opencode is not available after environment activation" >&2
       exit 127
     fi
     {
@@ -195,18 +198,16 @@ run_query_locally() {
       python -c 'import sys; print("python_executable=" + sys.executable)' 2>/dev/null || true
       echo "pip=$(command -v pip || true)"
       pip --version 2>/dev/null || true
-      echo "codex=$(command -v codex || true)"
+      echo "opencode=$(command -v "$OPENCODE_BIN" || true)"
       echo "conda_env=${CONDA_DEFAULT_ENV:-}"
+      echo "opencode_config_dir=$opencode_config"
+      echo "opencode_config=$opencode_config/opencode.json"
       echo "node_activate_script=$NODE_ACTIVATE_SCRIPT"
       echo "mineru_local_api_url=$MINERU_LOCAL_API_URL"
     } > "$env_info_file"
     if [[ "$DEBUG_MODE" == "1" ]]; then
       echo "[debug] whoami=$(whoami)"
       echo "[debug] pwd=$workspace"
-      echo "[debug] CODEX_HOME=$CODEX_HOME"
-      echo "[debug] CODEX_SQLITE_HOME=$CODEX_SQLITE_HOME"
-      echo "[debug] XDG_CONFIG_HOME=$XDG_CONFIG_HOME"
-      echo "[debug] XDG_CACHE_HOME=$XDG_CACHE_HOME"
       echo "[debug] MINERU_LOCAL_API_URL=$MINERU_LOCAL_API_URL"
       echo "[debug] ACTIVATE_SCRIPT=$ACTIVATE_SCRIPT"
       echo "[debug] CONDA_ENV_NAME=$CONDA_ENV_NAME"
@@ -214,9 +215,10 @@ run_query_locally() {
       echo "[debug] NODE_ACTIVATE_SCRIPT=$NODE_ACTIVATE_SCRIPT"
       echo "[debug] workspace_before"
       find "$workspace" -maxdepth 3 -type f | sort
+      echo "[debug] cmd=${cmd[*]}"
     fi
     cd "$workspace"
-    "${cmd[@]}" < "$prompt_file"
+    "${cmd[@]}" < /dev/null 2>"$debug_log_file"
     if [[ "$DEBUG_MODE" == "1" ]]; then
       echo "[debug] workspace_after"
       find "$workspace" -maxdepth 3 -type f | sort

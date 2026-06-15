@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -168,19 +169,33 @@ def build_judge_prompt(task: Task, report_text: str) -> str:
                 "dimension": "string",
                 "criteria": "string",
                 "passed": True,
+                "verdict": "pass|fail|uncertain",
                 "confidence": "high|medium|low",
                 "evidence": ["short quotations or paraphrases from the report"],
                 "reason": "short justification for the decision",
+                "requested_artifacts": [
+                    {
+                        "path": "artifacts/example.csv",
+                        "purpose": "why this report-cited artifact would clarify an uncertain rubric",
+                    }
+                ],
             }
         ],
         "overall_notes": ["optional notes"],
     }
-    return f"""You are a strict benchmark judge.
+    return f"""You are a strict report-only benchmark judge.
 
-Evaluate whether the candidate report satisfies each rubric using only the report itself.
-Do not use external knowledge. Do not infer work that is not stated in the report.
-A rubric passes only if the report gives concrete evidence that the requirement was actually met, including the relevant fields, operations, results, or artifact paths when applicable.
-If the report is ambiguous, partial, or only claims that work was done without evidence, mark the rubric as failed.
+Evaluate whether the candidate report satisfies each rubric using only the report text.
+Do not use external knowledge, inspect files, or infer analysis steps that are not supported by the report.
+
+Return one of three verdicts for each rubric:
+- pass: the report gives enough concrete evidence to decide that the requirement was satisfied.
+- fail: the report contradicts the requirement, omits a central required operation, or only gives vague unsupported claims.
+- uncertain: the report makes a relevant claim or cites an `artifacts/...` output, but the report text alone is not enough to decide.
+
+Concrete evidence can include fields used, rules or operations applied, output paths, resulting counts, examples, or a clear not-applicable explanation for data-dependent edge cases. Do not require every illustrative example in a rubric when the report describes a general rule covering that class. Do require evidence for explicitly required fields, checks, outputs, or metrics.
+
+Use `verdict: "uncertain"` for cases that need artifact inspection rather than guessing. For uncertain rubrics, set `passed` to false and list only report-cited `artifacts/...` paths in `requested_artifacts`. Do not use uncertain when the report contains no relevant claim or no artifact path that could resolve the issue; mark those cases as failed.
 
 Return strict JSON only. No markdown fences. Return exactly one rubric_results item for every rubric in Task metadata.
 
@@ -199,24 +214,32 @@ Candidate report:
 
 def post_json(url: str, api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"request failed: {exc}") from exc
-    return json.loads(raw)
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                raw = resp.read().decode("utf-8")
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError as exc:
+                last_error = RuntimeError(f"non-JSON response on attempt {attempt}: {raw[:200]!r}")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            last_error = RuntimeError(f"HTTP {exc.code}: {detail}")
+        except urllib.error.URLError as exc:
+            last_error = RuntimeError(f"request failed: {exc}")
+        if attempt < 3:
+            time.sleep(5 * attempt)
+    raise RuntimeError(str(last_error) if last_error else "request failed")
 
 
 def run_judge(prompt: str, api_url: str, api_key: str, model: str, temperature: float, max_output_tokens: int) -> tuple[str, dict[str, Any]]:
@@ -288,6 +311,27 @@ def normalize_judge_result(task: Task, judge_result: dict[str, Any]) -> dict[str
         evidence = item.get("evidence", [])
         if not isinstance(evidence, list):
             evidence = []
+        requested_artifacts = item.get("requested_artifacts", [])
+        if not isinstance(requested_artifacts, list):
+            requested_artifacts = []
+        normalized_requested_artifacts: list[dict[str, str]] = []
+        for artifact_item in requested_artifacts:
+            if isinstance(artifact_item, str):
+                normalized_requested_artifacts.append({"path": artifact_item, "purpose": ""})
+            elif isinstance(artifact_item, dict):
+                path = artifact_item.get("path")
+                if isinstance(path, str) and path.strip():
+                    normalized_requested_artifacts.append(
+                        {
+                            "path": path,
+                            "purpose": str(artifact_item.get("purpose", "")),
+                        }
+                    )
+        verdict = str(item.get("verdict", "pass" if passed else "fail")).lower()
+        if verdict not in {"pass", "fail", "uncertain"}:
+            verdict = "pass" if passed else "fail"
+        if verdict == "uncertain":
+            passed = False
         rubric_results.append(
             {
                 "subtask_id": subtask_id,
@@ -296,9 +340,11 @@ def normalize_judge_result(task: Task, judge_result: dict[str, Any]) -> dict[str
                 "dimension": meta["dimension"],
                 "criteria": meta["criteria"],
                 "passed": passed,
+                "verdict": verdict,
                 "confidence": str(item.get("confidence", "unknown")),
                 "evidence": [str(x) for x in evidence],
                 "reason": str(item.get("reason", "")),
+                "requested_artifacts": normalized_requested_artifacts,
             }
         )
 
@@ -313,9 +359,11 @@ def normalize_judge_result(task: Task, judge_result: dict[str, Any]) -> dict[str
                 "dimension": meta["dimension"],
                 "criteria": meta["criteria"],
                 "passed": False,
+                "verdict": "fail",
                 "confidence": "missing",
                 "evidence": [],
                 "reason": "Judge output did not provide a decision for this rubric.",
+                "requested_artifacts": [],
             }
         )
 
@@ -330,7 +378,7 @@ def normalize_judge_result(task: Task, judge_result: dict[str, Any]) -> dict[str
             {
                 "subtask_id": subtask.subtask_id,
                 "subtask_name": subtask.name,
-                "passed": passed_rubrics == len(group),
+                "passed": bool(group) and passed_rubrics == len(group),
                 "passed_rubrics": passed_rubrics,
                 "total_rubrics": len(group),
                 "failed_rubric_indexes": [r["rubric_index"] for r in failed_rubrics],
@@ -343,7 +391,7 @@ def normalize_judge_result(task: Task, judge_result: dict[str, Any]) -> dict[str
     total_subtasks = len(subtask_results)
     passed_subtasks = sum(1 for s in subtask_results if s["passed"])
     task_score = passed_subtasks / total_subtasks if total_subtasks else 0.0
-    task_passed = passed_subtasks == total_subtasks
+    task_passed = total_subtasks > 0 and passed_subtasks == total_subtasks
 
     return {
         "task_id": task.task_id,
@@ -367,17 +415,47 @@ def normalize_judge_result(task: Task, judge_result: dict[str, Any]) -> dict[str
     }
 
 
-def aggregate_results(task_results: list[dict[str, Any]]) -> dict[str, Any]:
-    total_tasks = len(task_results)
-    passed_tasks = sum(1 for r in task_results if r["summary"]["task_passed"])
-    total_task_score = sum(float(r["summary"].get("task_score", 0.0)) for r in task_results)
-    total_subtasks = sum(r["summary"]["total_subtasks"] for r in task_results)
-    passed_subtasks = sum(r["summary"]["passed_subtasks"] for r in task_results)
-    total_rubrics = sum(r["summary"]["total_rubrics"] for r in task_results)
-    passed_rubrics = sum(r["summary"]["passed_rubrics"] for r in task_results)
+def aggregate_results(task_results: list[dict[str, Any]], tasks: list[Task]) -> dict[str, Any]:
+    result_by_query_id = {r["query_id"]: r for r in task_results}
+    total_tasks = len(tasks)
+    passed_tasks = 0
+    total_task_score = 0.0
+    total_subtasks = sum(len(task.subtasks) for task in tasks)
+    total_rubrics = sum(len(subtask.rubrics) for task in tasks for subtask in task.subtasks)
+    passed_subtasks = 0
+    passed_rubrics = 0
+
+    for task in tasks:
+        result = result_by_query_id.get(task.query_id)
+        if result is None:
+            continue
+        summary = result["summary"]
+        passed_tasks += 1 if summary["task_passed"] else 0
+        total_task_score += float(summary.get("task_score", 0.0))
+        passed_subtasks += min(int(summary.get("passed_subtasks", 0)), len(task.subtasks))
+        expected_rubrics = sum(len(subtask.rubrics) for subtask in task.subtasks)
+        passed_rubrics += min(int(summary.get("passed_rubrics", 0)), expected_rubrics)
 
     failed_tasks = []
-    for result in task_results:
+    for task in tasks:
+        result = result_by_query_id.get(task.query_id)
+        if result is None:
+            failed_tasks.append(
+                {
+                    "task_id": task.task_id,
+                    "query_id": task.query_id,
+                    "failed_subtasks": [
+                        {
+                            "subtask_id": subtask.subtask_id,
+                            "subtask_name": subtask.name,
+                            "failed_rubric_indexes": list(range(1, len(subtask.rubrics) + 1)),
+                            "failed_rubric_count": len(subtask.rubrics),
+                        }
+                        for subtask in task.subtasks
+                    ],
+                }
+            )
+            continue
         if result["summary"]["task_passed"]:
             continue
         failed_subtasks = [s for s in result["subtask_results"] if not s["passed"]]
@@ -539,7 +617,7 @@ def main() -> int:
             }
             for r in task_results
         ],
-        "aggregate": aggregate_results(task_results),
+        "aggregate": aggregate_results(task_results, tasks),
         "failures": failures,
     }
     write_json(output_dir / "summary.json", summary)

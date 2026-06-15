@@ -9,7 +9,7 @@ from typing import Any
 
 
 DEFAULT_JUDGE_API_URL = "http://123.129.219.111:3000/v1"
-DEFAULT_JUDGE_API_KEY = "sk-"
+DEFAULT_JUDGE_API_KEY = ""
 DEFAULT_JUDGE_MODEL = "gpt-5.4"
 
 
@@ -92,6 +92,34 @@ def build_single_task_benchmark(benchmark_core: dict[str, Any], stage_2_task: di
     }
 
 
+def count_expected_units(benchmark_core: dict[str, Any], stage_2_task: dict[str, Any]) -> dict[str, int]:
+    subtask_rubric_counts: dict[str, int] = {}
+    for item in benchmark_core["stage_1_subtask_pool"]:
+        if not isinstance(item, dict):
+            continue
+        subtask_id = item.get("subtask_id")
+        rubrics = item.get("rubrics", [])
+        if isinstance(subtask_id, str) and isinstance(rubrics, list):
+            subtask_rubric_counts[subtask_id] = len(rubrics)
+
+    refs = stage_2_task.get("hidden_subtasks_refs", [])
+    if not isinstance(refs, list):
+        refs = []
+
+    total_subtasks = 0
+    total_rubrics = 0
+    for ref in refs:
+        if not isinstance(ref, str) or ref not in subtask_rubric_counts:
+            continue
+        total_subtasks += 1
+        total_rubrics += subtask_rubric_counts[ref]
+
+    return {
+        "expected_subtasks": total_subtasks,
+        "expected_rubrics": total_rubrics,
+    }
+
+
 def run_subprocess(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, text=True, capture_output=True)
 
@@ -104,6 +132,7 @@ def main() -> int:
     scripts_dir = Path(__file__).resolve().parent
     stage1_script = scripts_dir / "validate_reproduction_stage1.py"
     stage2_script = scripts_dir / "evaluate_reports_stage2.py"
+    stage3_script = scripts_dir / "evaluate_reports_stage3.py"
 
     if not benchmark_json.is_file():
         print(f"benchmark JSON does not exist: {benchmark_json}", file=sys.stderr)
@@ -117,28 +146,36 @@ def main() -> int:
     if not stage2_script.is_file():
         print(f"stage-2 script not found: {stage2_script}", file=sys.stderr)
         return 1
+    if not stage3_script.is_file():
+        print(f"stage-3 script not found: {stage3_script}", file=sys.stderr)
+        return 1
 
     benchmark_core, tasks = extract_tasks(benchmark_json, args.limit)
     output_dir.mkdir(parents=True, exist_ok=True)
     stage1_root = output_dir / "stage1"
     stage2_root = output_dir / "stage2"
+    stage3_root = output_dir / "stage3"
     temp_root = output_dir / "_tmp"
 
     task_summaries: list[dict[str, Any]] = []
     stage1_failures: list[dict[str, Any]] = []
     stage2_failures: list[dict[str, Any]] = []
+    stage3_failures: list[dict[str, Any]] = []
 
     for task in tasks:
         query_id = task["query_id"]
         candidate_dir = report_dir / query_id
         report_path = find_report(candidate_dir)
+        expected_units = count_expected_units(benchmark_core, task["stage_2_task"])
         task_summary: dict[str, Any] = {
             "task_id": task["task_id"],
             "query_id": query_id,
             "candidate_dir": str(candidate_dir),
             "report_path": str(report_path) if report_path else None,
+            **expected_units,
             "stage1": None,
             "stage2": None,
+            "stage3": None,
             "final_task_passed": False,
             "final_task_score": 0.0,
         }
@@ -156,12 +193,23 @@ def main() -> int:
             str(stage1_task_dir / "replay"),
             "--timeout-seconds",
             str(args.stage1_timeout_seconds),
+            "--judge-api-url",
+            args.judge_api_url,
+            "--judge-api-key",
+            args.judge_api_key,
+            "--judge-model",
+            args.judge_model,
+            "--judge-temperature",
+            str(args.judge_temperature),
+            "--judge-max-output-tokens",
+            str(args.judge_max_output_tokens),
         ]
         if args.keep_stage1_workspace:
             stage1_cmd.append("--keep-workspace")
 
         if not (args.skip_existing and stage1_output_json.is_file()):
             proc = run_subprocess(stage1_cmd)
+            stage1_task_dir.mkdir(parents=True, exist_ok=True)
             (stage1_task_dir / "stage1_stdout.txt").write_text(proc.stdout, encoding="utf-8")
             (stage1_task_dir / "stage1_stderr.txt").write_text(proc.stderr, encoding="utf-8")
 
@@ -194,7 +242,10 @@ def main() -> int:
                     "step": step.get("step"),
                     "returncode": step.get("returncode"),
                     "missing_outputs": step.get("missing_outputs", []),
-                    "unchanged_outputs": step.get("unchanged_outputs", []),
+                    "missing_candidate_outputs": step.get("missing_candidate_outputs", []),
+                    "digest_mismatches": step.get("digest_mismatches", []),
+                    "artifact_comparison_errors": step.get("artifact_comparison_errors", {}),
+                    "content_validation_errors": step.get("content_validation_errors", {}),
                     "log_file": step.get("log_file"),
                 }
                 for step in stage1_result.get("steps", [])
@@ -280,8 +331,62 @@ def main() -> int:
         per_task_eval = next((p for p in per_task_eval_candidates if p.is_file()), None)
         task_passed = False
         task_score = 0.0
+        stage3_output_json: Path | None = None
+        stage3_summary: dict[str, Any] | None = None
         if per_task_eval is not None:
             per_task_eval_json = load_json(per_task_eval)
+            uncertain_count = sum(
+                1
+                for rubric in per_task_eval_json.get("rubric_results", [])
+                if isinstance(rubric, dict) and str(rubric.get("verdict", "")).lower() == "uncertain"
+            )
+            if uncertain_count:
+                stage3_task_dir = stage3_root / query_id
+                stage3_output_json = stage3_task_dir / "task_evaluation.json"
+                stage3_cmd = [
+                    sys.executable,
+                    str(stage3_script),
+                    "--task-evaluation-json",
+                    str(per_task_eval),
+                    "--candidate-dir",
+                    str(candidate_dir),
+                    "--output-json",
+                    str(stage3_output_json),
+                    "--judge-api-url",
+                    args.judge_api_url,
+                    "--judge-api-key",
+                    args.judge_api_key,
+                    "--judge-model",
+                    args.judge_model,
+                    "--temperature",
+                    str(args.judge_temperature),
+                    "--max-output-tokens",
+                    str(args.judge_max_output_tokens),
+                ]
+                if not (args.skip_existing and stage3_output_json.is_file()):
+                    proc = run_subprocess(stage3_cmd)
+                    stage3_task_dir.mkdir(parents=True, exist_ok=True)
+                    (stage3_task_dir / "stage3_stdout.txt").write_text(proc.stdout, encoding="utf-8")
+                    (stage3_task_dir / "stage3_stderr.txt").write_text(proc.stderr, encoding="utf-8")
+                if stage3_output_json.is_file():
+                    per_task_eval = stage3_output_json
+                    per_task_eval_json = load_json(per_task_eval)
+                    stage3_summary = per_task_eval_json.get("stage3_evaluation", {})
+                else:
+                    stage3_failures.append(
+                        {
+                            "task_id": task["task_id"],
+                            "query_id": query_id,
+                            "error": "stage-3 task_evaluation.json was not created",
+                            "stage3_dir": str(stage3_task_dir),
+                            "uncertain_rubrics": uncertain_count,
+                        }
+                    )
+                    stage3_summary = {
+                        "evaluated": False,
+                        "uncertain_rubrics": uncertain_count,
+                        "result_path": str(stage3_output_json),
+                    }
             task_summary_block = per_task_eval_json.get("summary", {})
             task_passed = bool(task_summary_block.get("task_passed"))
             task_score = float(task_summary_block.get("task_score", 0.0))
@@ -293,6 +398,13 @@ def main() -> int:
             "task_passed": task_passed,
             "task_score": task_score,
         }
+        if stage3_summary is not None:
+            task_summary["stage3"] = {
+                "evaluated": bool(stage3_summary.get("evaluated")),
+                "uncertain_rubrics": int(stage3_summary.get("uncertain_rubrics", 0)),
+                "adjudicated_rubrics": int(stage3_summary.get("adjudicated_rubrics", 0)),
+                "task_evaluation_path": str(stage3_output_json) if stage3_output_json is not None else None,
+            }
         task_summary["final_task_passed"] = stage1_passed and task_passed
         task_summary["final_task_score"] = task_score if stage1_passed else 0.0
 
@@ -304,6 +416,7 @@ def main() -> int:
     total_tasks = len(task_summaries)
     stage1_passed_tasks = sum(1 for x in task_summaries if (x.get("stage1") or {}).get("passed"))
     stage2_evaluated_tasks = sum(1 for x in task_summaries if (x.get("stage2") or {}).get("evaluated"))
+    stage3_evaluated_tasks = sum(1 for x in task_summaries if (x.get("stage3") or {}).get("evaluated"))
     final_passed_tasks = sum(1 for x in task_summaries if x.get("final_task_passed"))
     final_task_score_sum = sum(float(x.get("final_task_score", 0.0)) for x in task_summaries)
 
@@ -317,10 +430,12 @@ def main() -> int:
             continue
         task_eval = load_json(Path(task_eval_path))
         summary = task_eval.get("summary", {})
-        total_subtasks += int(summary.get("total_subtasks", 0))
-        passed_subtasks += int(summary.get("passed_subtasks", 0))
-        total_rubrics += int(summary.get("total_rubrics", 0))
-        passed_rubrics += int(summary.get("passed_rubrics", 0))
+        if (task_summary.get("stage1") or {}).get("passed"):
+            passed_subtasks += min(int(summary.get("passed_subtasks", 0)), int(task_summary.get("expected_subtasks", 0)))
+            passed_rubrics += min(int(summary.get("passed_rubrics", 0)), int(task_summary.get("expected_rubrics", 0)))
+
+    total_subtasks = sum(int(x.get("expected_subtasks", 0)) for x in task_summaries)
+    total_rubrics = sum(int(x.get("expected_rubrics", 0)) for x in task_summaries)
 
     final_summary = {
         "benchmark_json": str(benchmark_json),
@@ -336,6 +451,7 @@ def main() -> int:
             "tasks_total": total_tasks,
             "stage1_passed_tasks": stage1_passed_tasks,
             "stage2_evaluated_tasks": stage2_evaluated_tasks,
+            "stage3_evaluated_tasks": stage3_evaluated_tasks,
             "final_passed_tasks": final_passed_tasks,
             "final_task_score_sum": final_task_score_sum,
             "subtasks_total": total_subtasks,
@@ -353,6 +469,7 @@ def main() -> int:
         "tasks": task_summaries,
         "stage1_failures": stage1_failures,
         "stage2_failures": stage2_failures,
+        "stage3_failures": stage3_failures,
     }
     write_json(output_dir / "summary.json", final_summary)
     return 0
