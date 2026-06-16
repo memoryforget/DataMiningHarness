@@ -668,6 +668,19 @@ def build_replay_command(raw_command: str, activate_script: Path | None, conda_e
     return " && ".join(setup_parts + [raw_command])
 
 
+def default_tmp_root() -> Path:
+    workspace_root = Path(__file__).resolve().parents[2]
+    value = os.environ.get("TMP_ROOT")
+    if value:
+        return Path(value).resolve()
+    return workspace_root / "tmp"
+
+
+def local_batch_replay_root(candidate_dir: Path, output_json: Path) -> Path:
+    digest = hashlib.sha1(str(output_json).encode("utf-8")).hexdigest()[:10]
+    return default_tmp_root() / f"stage1-local-batch_{candidate_dir.name}_{digest}"
+
+
 def main() -> int:
     args = parse_args()
     candidate_dir = Path(args.candidate_dir).resolve()
@@ -707,6 +720,8 @@ def main() -> int:
     for step in steps:
         for output_artifact in step["OUTPUT_ARTIFACT"]:
             key = normalize_artifact_key(candidate_dir, output_artifact)
+            if key == "artifacts":
+                continue
             if key is None or not key.startswith("artifacts/"):
                 invalid_declared_outputs.append(output_artifact)
                 continue
@@ -727,12 +742,23 @@ def main() -> int:
         write_result(output_json, result)
         return 1
 
-    work_root = Path(args.work_root).resolve() if args.work_root else candidate_dir.parent / f"{candidate_dir.name}_stage1_replay"
-    workspace_dir = work_root / "workspace"
-    logs_dir = work_root / "logs"
+    if args.work_root:
+        work_root = Path(args.work_root).resolve()
+        replay_root = work_root
+        workspace_dir = work_root
+        logs_dir = output_json.parent / "replay_logs"
+    else:
+        work_root = candidate_dir.parent / f"{candidate_dir.name}_stage1_replay"
+        replay_root = local_batch_replay_root(candidate_dir, output_json)
+        workspace_dir = replay_root / candidate_dir.name / "workspace"
+        logs_dir = work_root / "logs"
 
     if work_root.exists():
         shutil.rmtree(work_root)
+    if not args.work_root and replay_root.exists():
+        shutil.rmtree(replay_root)
+    if logs_dir.exists():
+        shutil.rmtree(logs_dir)
     workspace_dir.mkdir(parents=True)
     (workspace_dir / "artifacts").mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True)
@@ -916,13 +942,18 @@ def main() -> int:
             break
 
     result["execution_pass"] = overall_pass
+    result["work_root"] = str(work_root)
+    result["replay_root"] = str(replay_root)
     result["workspace"] = str(workspace_dir)
     result["logs_dir"] = str(logs_dir)
 
     write_result(output_json, result)
 
     if not args.keep_workspace and overall_pass:
-        shutil.rmtree(work_root)
+        if work_root.exists():
+            shutil.rmtree(work_root)
+        if replay_root != work_root and replay_root.exists():
+            shutil.rmtree(replay_root)
 
     return 0 if overall_pass else 1
 

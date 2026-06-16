@@ -10,7 +10,7 @@ from typing import Any
 
 DEFAULT_JUDGE_API_URL = "http://123.129.219.111:3000/v1"
 DEFAULT_JUDGE_API_KEY = ""
-DEFAULT_JUDGE_MODEL = "gpt-5.4"
+DEFAULT_JUDGE_MODEL = "gpt-5.5"
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--stage1-timeout-seconds", type=int, default=600)
     parser.add_argument("--keep-stage1-workspace", action="store_true")
+    parser.add_argument("--stage1-replay-root", default=None)
     parser.add_argument("--judge-api-url", default=DEFAULT_JUDGE_API_URL)
     parser.add_argument("--judge-api-key", default=DEFAULT_JUDGE_API_KEY)
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL)
@@ -156,6 +157,7 @@ def main() -> int:
     stage2_root = output_dir / "stage2"
     stage3_root = output_dir / "stage3"
     temp_root = output_dir / "_tmp"
+    stage1_replay_root = Path(args.stage1_replay_root).resolve() if args.stage1_replay_root else None
 
     task_summaries: list[dict[str, Any]] = []
     stage1_failures: list[dict[str, Any]] = []
@@ -182,6 +184,7 @@ def main() -> int:
 
         stage1_task_dir = stage1_root / query_id
         stage1_output_json = stage1_task_dir / "stage1_eval.json"
+        stage1_work_root = (stage1_replay_root / query_id / "replay") if stage1_replay_root else (stage1_task_dir / "replay")
         stage1_cmd = [
             sys.executable,
             str(stage1_script),
@@ -190,7 +193,7 @@ def main() -> int:
             "--output-json",
             str(stage1_output_json),
             "--work-root",
-            str(stage1_task_dir / "replay"),
+            str(stage1_work_root),
             "--timeout-seconds",
             str(args.stage1_timeout_seconds),
             "--judge-api-url",
