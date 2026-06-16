@@ -32,13 +32,13 @@ The markdown file is the primary reading surface. If the markdown references ext
 From the repository root:
 
 ```bash
-python scripts/mineru.py --pdf /absolute/path/to/file.pdf
+python scripts/mineru.py --pdf /absolute/path/to/file.pdf --timeout-seconds 300 --local-api-url http://127.0.0.1:18000
 ```
 
 Allowed variant:
 
 ```bash
-python scripts/mineru.py --pdf /absolute/path/to/file.pdf --output-dir ./mineru_runs
+python scripts/mineru.py --pdf /absolute/path/to/file.pdf --output-dir ./mineru_runs --timeout-seconds 300 --local-api-url http://127.0.0.1:18000
 ```
 
 ## Workflow
@@ -58,4 +58,4 @@ python scripts/mineru.py --pdf /absolute/path/to/file.pdf --output-dir ./mineru_
 4. Do not fabricate PDF evidence when parsing fails.
 5. If parsing fails, report the failure and continue with other evidence if possible.
 6. Prefer markdown text as the default source, and use extracted images only when they add evidence the text does not preserve.
-7. If `MINERU_LOCAL_API_URL` is set, expect the wrapper to route local parsing through that API endpoint; do not replace it with a different endpoint unless explicitly instructed.
+7. Always route local parsing through `--local-api-url http://127.0.0.1:18000`, which points to the pre-started MinerU API service for this benchmark environment. Do not replace it with a different endpoint unless explicitly instructed.
