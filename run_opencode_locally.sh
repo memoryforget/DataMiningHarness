@@ -148,9 +148,16 @@ run_query_locally() {
   local insights_file="$task_output_dir/report.md"
   local run_root="$TMP_ROOT/$query_id"
   local workspace="$run_root/workspace"
+  local opencode_home="$run_root/opencode-home"
+  local xdg_config_home="$run_root/.config"
+  local xdg_cache_home="$run_root/.cache"
+  local xdg_data_home="$run_root/.local/share"
   local opencode_config="$workspace/.opencode"
   local opencode_skills="$opencode_config/skills"
   local env_info_file="$task_output_dir/env_info.txt"
+  local task_start_ts=0
+  local task_end_ts=0
+  local task_elapsed_seconds=0
   local exit_code=0
   local -a cmd=(
     "$OPENCODE_BIN" run "$prompt_text"
@@ -168,12 +175,20 @@ run_query_locally() {
 
   mkdir -p "$task_output_dir"
   rm -rf "$run_root"
-  mkdir -p "$workspace/artifacts" "$opencode_config" "$opencode_skills"
+  mkdir -p \
+    "$workspace/artifacts" \
+    "$opencode_config" \
+    "$opencode_skills" \
+    "$opencode_home" \
+    "$xdg_config_home" \
+    "$xdg_cache_home" \
+    "$xdg_data_home"
   cp -a "$HARNESS_DIR/skills/mineru-pdf" "$opencode_skills/mineru-pdf"
   cp "$OPENCODE_CONFIG_DIR/opencode.json" "$opencode_config/opencode.json"
 
   : > "$log_file"
   printf '%s\n' "$prompt_text" > "$prompt_file"
+  task_start_ts="$(date +%s)"
   printf '[%s] start %s\n' "$(date -u +%FT%TZ)" "$query_id" | tee -a "$log_file" >&2
 
   set +e
@@ -182,6 +197,10 @@ run_query_locally() {
     export MINERU_LOCAL_API_URL="$MINERU_LOCAL_API_URL"
     export TASK_OUTPUT_DIR="$task_output_dir"
     export IS_SANDBOX=1
+    export HOME="$opencode_home"
+    export XDG_CONFIG_HOME="$xdg_config_home"
+    export XDG_CACHE_HOME="$xdg_cache_home"
+    export XDG_DATA_HOME="$xdg_data_home"
     if [[ $USE_CONDA_ACTIVATE -eq 1 ]]; then
       source "$ACTIVATE_SCRIPT"
       conda activate "$CONDA_ENV_NAME"
@@ -200,6 +219,10 @@ run_query_locally() {
       pip --version 2>/dev/null || true
       echo "opencode=$(command -v "$OPENCODE_BIN" || true)"
       echo "conda_env=${CONDA_DEFAULT_ENV:-}"
+      echo "home=$HOME"
+      echo "xdg_config_home=$XDG_CONFIG_HOME"
+      echo "xdg_cache_home=$XDG_CACHE_HOME"
+      echo "xdg_data_home=$XDG_DATA_HOME"
       echo "opencode_config_dir=$opencode_config"
       echo "opencode_config=$opencode_config/opencode.json"
       echo "node_activate_script=$NODE_ACTIVATE_SCRIPT"
@@ -212,6 +235,10 @@ run_query_locally() {
       echo "[debug] ACTIVATE_SCRIPT=$ACTIVATE_SCRIPT"
       echo "[debug] CONDA_ENV_NAME=$CONDA_ENV_NAME"
       echo "[debug] CONDA_DEFAULT_ENV=${CONDA_DEFAULT_ENV:-}"
+      echo "[debug] HOME=$HOME"
+      echo "[debug] XDG_CONFIG_HOME=$XDG_CONFIG_HOME"
+      echo "[debug] XDG_CACHE_HOME=$XDG_CACHE_HOME"
+      echo "[debug] XDG_DATA_HOME=$XDG_DATA_HOME"
       echo "[debug] NODE_ACTIVATE_SCRIPT=$NODE_ACTIVATE_SCRIPT"
       echo "[debug] workspace_before"
       find "$workspace" -maxdepth 3 -type f | sort
@@ -226,6 +253,17 @@ run_query_locally() {
   ) >>"$log_file" 2>&1
   exit_code=$?
   set -e
+  task_end_ts="$(date +%s)"
+  task_elapsed_seconds=$((task_end_ts - task_start_ts))
+  printf '%s\n' "$task_elapsed_seconds" > "$task_output_dir/run_time_seconds.txt"
+  cat > "$task_output_dir/run_time_summary.json" <<EOF
+{
+  "task_id": "$query_id",
+  "run_time_seconds": $task_elapsed_seconds,
+  "start_epoch_seconds": $task_start_ts,
+  "end_epoch_seconds": $task_end_ts
+}
+EOF
 
   if [[ -f "$workspace/report.md" ]]; then
     cp -f "$workspace/report.md" "$insights_file"
@@ -238,6 +276,10 @@ run_query_locally() {
     rm -rf "$task_output_dir/mineru_runs"
     cp -a "$workspace/mineru_runs" "$task_output_dir/mineru_runs"
   fi
+  python3 "$HARNESS_DIR/scripts/extract_token_usage.py" task \
+    --tool opencode \
+    --run-root "$run_root" \
+    --output-dir "$task_output_dir" >>"$log_file" 2>&1 || true
 
   if [[ $exit_code -eq 0 && ( ! -f "$insights_file" || ! -s "$insights_file" ) ]]; then
     echo "Expected output missing: $insights_file" >> "$log_file"
@@ -251,7 +293,7 @@ run_query_locally() {
     return "$exit_code"
   fi
 
-  printf '[%s] done %s\n' "$(date -u +%FT%TZ)" "$query_id" | tee -a "$log_file" >&2
+  printf '[%s] done %s time=%ss\n' "$(date -u +%FT%TZ)" "$query_id" "$task_elapsed_seconds" | tee -a "$log_file" >&2
 }
 
 wait_for_slot() {
@@ -265,6 +307,7 @@ run_batch() {
   local query_text=""
   local prompt_text=""
   local data_lake_path=""
+  local seen=0
   local submitted=0
   local -a helper_args=(
     python3 "$HARNESS_DIR/scripts/extract_formatted_queries.py"
@@ -277,6 +320,7 @@ run_batch() {
 
   while IFS=$'\t' read -r query_id data_lake_path query_text; do
     [[ -n "$query_id" ]] || continue
+    seen=$((seen + 1))
 
     if [[ ! -d "$data_lake_path" ]]; then
       echo "Data lake path does not exist for query $query_id: $data_lake_path" >&2
@@ -295,12 +339,19 @@ run_batch() {
     submitted=$((submitted + 1))
   done < <("${helper_args[@]}")
 
-  if [[ $submitted -eq 0 ]]; then
+  if [[ $seen -eq 0 ]]; then
     echo "No benchmark stage_2_tasks matched the current filters." >&2
     exit 1
   fi
 
+  if [[ $submitted -eq 0 ]]; then
+    echo "All matched queries were skipped or unavailable; no new runs submitted." >&2
+  fi
+
   wait
+
+  python3 "$HARNESS_DIR/scripts/extract_token_usage.py" summary \
+    --output-dir "$OUTPUT_DIR" >/dev/null 2>&1 || true
 
   if [[ -s "$FAIL_LOG" ]]; then
     echo "Some queries failed:" >&2

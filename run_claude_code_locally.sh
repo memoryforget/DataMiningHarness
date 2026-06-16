@@ -153,6 +153,9 @@ run_query_locally() {
   local xdg_config="$run_root/.config"
   local xdg_cache="$run_root/.cache"
   local env_info_file="$task_output_dir/env_info.txt"
+  local task_start_ts=0
+  local task_end_ts=0
+  local task_elapsed_seconds=0
   local exit_code=0
   local -a cmd=(
     "$CLAUDE_BIN"
@@ -176,8 +179,10 @@ run_query_locally() {
   cp -a "$HARNESS_DIR/skills/mineru-pdf" "$claude_config/skills/mineru-pdf"
   cp "$CLAUDE_CONFIG_DIR/settings.json" "$claude_config/settings.json"
 
+
   : > "$log_file"
   printf '%s\n' "$prompt_text" > "$prompt_file"
+  task_start_ts="$(date +%s)"
   printf '[%s] start %s\n' "$(date -u +%FT%TZ)" "$query_id" | tee -a "$log_file" >&2
 
   set +e
@@ -238,6 +243,17 @@ run_query_locally() {
   ) >>"$log_file" 2>&1
   exit_code=$?
   set -e
+  task_end_ts="$(date +%s)"
+  task_elapsed_seconds=$((task_end_ts - task_start_ts))
+  printf '%s\n' "$task_elapsed_seconds" > "$task_output_dir/run_time_seconds.txt"
+  cat > "$task_output_dir/run_time_summary.json" <<EOF
+{
+  "task_id": "$query_id",
+  "run_time_seconds": $task_elapsed_seconds,
+  "start_epoch_seconds": $task_start_ts,
+  "end_epoch_seconds": $task_end_ts
+}
+EOF
 
   if [[ -f "$workspace/report.md" ]]; then
     cp -f "$workspace/report.md" "$insights_file"
@@ -250,6 +266,10 @@ run_query_locally() {
     rm -rf "$task_output_dir/mineru_runs"
     cp -a "$workspace/mineru_runs" "$task_output_dir/mineru_runs"
   fi
+  python3 "$HARNESS_DIR/scripts/extract_token_usage.py" task \
+    --tool claude-code \
+    --run-root "$run_root" \
+    --output-dir "$task_output_dir" >>"$log_file" 2>&1 || true
 
   if [[ $exit_code -eq 0 && ( ! -f "$insights_file" || ! -s "$insights_file" ) ]]; then
     echo "Expected output missing: $insights_file" >> "$log_file"
@@ -263,7 +283,7 @@ run_query_locally() {
     return "$exit_code"
   fi
 
-  printf '[%s] done %s\n' "$(date -u +%FT%TZ)" "$query_id" | tee -a "$log_file" >&2
+  printf '[%s] done %s time=%ss\n' "$(date -u +%FT%TZ)" "$query_id" "$task_elapsed_seconds" | tee -a "$log_file" >&2
 }
 
 wait_for_slot() {
@@ -277,6 +297,7 @@ run_batch() {
   local query_text=""
   local prompt_text=""
   local data_lake_path=""
+  local seen=0
   local submitted=0
   local -a helper_args=(
     python3 "$HARNESS_DIR/scripts/extract_formatted_queries.py"
@@ -289,6 +310,7 @@ run_batch() {
 
   while IFS=$'\t' read -r query_id data_lake_path query_text; do
     [[ -n "$query_id" ]] || continue
+    seen=$((seen + 1))
 
     if [[ ! -d "$data_lake_path" ]]; then
       echo "Data lake path does not exist for query $query_id: $data_lake_path" >&2
@@ -307,12 +329,19 @@ run_batch() {
     submitted=$((submitted + 1))
   done < <("${helper_args[@]}")
 
-  if [[ $submitted -eq 0 ]]; then
+  if [[ $seen -eq 0 ]]; then
     echo "No benchmark stage_2_tasks matched the current filters." >&2
     exit 1
   fi
 
+  if [[ $submitted -eq 0 ]]; then
+    echo "All matched queries were skipped or unavailable; no new runs submitted." >&2
+  fi
+
   wait
+
+  python3 "$HARNESS_DIR/scripts/extract_token_usage.py" summary \
+    --output-dir "$OUTPUT_DIR" >/dev/null 2>&1 || true
 
   if [[ -s "$FAIL_LOG" ]]; then
     echo "Some queries failed:" >&2

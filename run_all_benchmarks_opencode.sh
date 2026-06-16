@@ -97,6 +97,15 @@ fi
 
 mkdir -p "$RUN_OUTPUT_ROOT" "$EVAL_OUTPUT_ROOT"
 
+format_duration() {
+  local total_seconds="$1"
+  local hours minutes seconds
+  hours=$((total_seconds / 3600))
+  minutes=$(((total_seconds % 3600) / 60))
+  seconds=$((total_seconds % 60))
+  printf '%02dh:%02dm:%02ds' "$hours" "$minutes" "$seconds"
+}
+
 build_generator_args() {
   local -a args=()
   if [[ -n "$LIMIT_TASKS" ]]; then
@@ -151,6 +160,8 @@ build_generator_args() {
 run_one_benchmark() {
   local benchmark_json="$1"
   local benchmark_name domain run_output_dir eval_output_dir
+  local run_elapsed_seconds
+
   benchmark_name="$(basename "$benchmark_json")"
   domain="${benchmark_name#benchmark_}"
   domain="${domain%.json}"
@@ -165,6 +176,13 @@ run_one_benchmark() {
     --queries-json "$benchmark_json" \
     --output-dir "$run_output_dir" \
     "${generator_args[@]}"
+  python3 "$HARNESS_DIR/scripts/summarize_run_times.py" \
+    --output-dir "$run_output_dir" >/dev/null 2>&1 || true
+  run_elapsed_seconds="$(cat "$run_output_dir/run_only_time_seconds.txt" 2>/dev/null || printf '0')"
+  printf '[%s] cumulative task run time cost: %ss (%s)\n' \
+    "$domain" \
+    "$run_elapsed_seconds" \
+    "$(format_duration "$run_elapsed_seconds")" >&2
 
   echo "[$domain] evaluating reports" >&2
   local -a eval_args=(
@@ -178,6 +196,9 @@ run_one_benchmark() {
   fi
   if [[ $SKIP_EXISTING -eq 1 ]]; then
     eval_args+=(--skip-existing)
+  fi
+  if [[ -n "$TMP_ROOT" ]]; then
+    eval_args+=(--stage1-replay-root "$TMP_ROOT")
   fi
   python3 "${eval_args[@]}"
 }
