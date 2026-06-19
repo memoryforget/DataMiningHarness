@@ -32,7 +32,10 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def codex_usage(run_root: Path) -> dict[str, Any]:
-    source_files = sorted(run_root.glob("codex-home/sessions/**/*.jsonl"))
+    source_files = sorted({
+        *run_root.glob("workspace/.codex/sessions/**/*.jsonl"),
+        *run_root.glob("codex-home/sessions/**/*.jsonl"),
+    })
     totals = {
         "input_tokens": 0,
         "cached_input_tokens": 0,
@@ -93,7 +96,10 @@ def codex_usage(run_root: Path) -> dict[str, Any]:
 
 
 def claude_usage(run_root: Path) -> dict[str, Any]:
-    source_files = sorted(run_root.glob("claude-home/.claude/projects/**/*.jsonl"))
+    source_files = sorted({
+        *run_root.glob("workspace/.claude/projects/**/*.jsonl"),
+        *run_root.glob("claude-home/.claude/projects/**/*.jsonl"),
+    })
     totals = {
         "input_tokens": 0,
         "cache_creation_input_tokens": 0,
@@ -144,6 +150,7 @@ def claude_usage(run_root: Path) -> dict[str, Any]:
 
 def opencode_usage(run_root: Path) -> dict[str, Any]:
     db_candidates = [
+        run_root / "workspace/.local/share/opencode/opencode.db",
         run_root / "opencode-home/.local/share/opencode/opencode.db",
         run_root / ".local/share/opencode/opencode.db",
     ]

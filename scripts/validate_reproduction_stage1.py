@@ -642,6 +642,48 @@ def copy_candidate_inputs(candidate_dir: Path, workspace_dir: Path, input_artifa
     return copied
 
 
+def copy_tree_overwrite(src: Path, dst: Path) -> None:
+    if dst.exists() or dst.is_symlink():
+        if dst.is_dir() and not dst.is_symlink():
+            shutil.rmtree(dst)
+        else:
+            dst.unlink()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dst)
+
+
+def install_replay_skills(candidate_dir: Path, workspace_dir: Path) -> list[str]:
+    harness_skill = Path(__file__).resolve().parents[1] / "skills" / "mineru-pdf"
+    tool_skill_roots = [
+        Path(".opencode/skills"),
+        Path(".codex/skills"),
+        Path(".claude/skills"),
+    ]
+    candidate_skills = [
+        (skill_root, candidate_dir / skill_root / "mineru-pdf")
+        for skill_root in tool_skill_roots
+    ]
+    existing_candidate_skills = [
+        (skill_root, candidate_skill)
+        for skill_root, candidate_skill in candidate_skills
+        if candidate_skill.is_dir()
+    ]
+
+    if existing_candidate_skills:
+        skill_sources = existing_candidate_skills
+    elif harness_skill.is_dir():
+        skill_sources = [(skill_root, harness_skill) for skill_root in tool_skill_roots]
+    else:
+        return []
+
+    installed = []
+    for skill_root, skill_source in skill_sources:
+        target = workspace_dir / skill_root / "mineru-pdf"
+        copy_tree_overwrite(skill_source, target)
+        installed.append(str(target.relative_to(workspace_dir)))
+    return installed
+
+
 def write_result(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -769,6 +811,7 @@ def main() -> int:
         step_no = step["STEP"]
         step_log = logs_dir / f"step_{step_no}.log"
         copied_inputs = copy_candidate_inputs(candidate_dir, workspace_dir, step["INPUT_ARTIFACT"])
+        installed_skills = install_replay_skills(candidate_dir, workspace_dir)
 
         output_paths: dict[str, Path] = {}
         candidate_output_snapshots: dict[str, FileSnapshot] = {}
@@ -922,6 +965,7 @@ def main() -> int:
                 "activate_script": str(activate_script) if use_conda_activate and activate_script is not None else None,
                 "conda_env": args.conda_env if use_conda_activate else None,
                 "copied_input_artifacts": copied_inputs,
+                "installed_skills": installed_skills,
                 "returncode": proc.returncode,
                 "timed_out": timed_out,
                 "duration_seconds": round(duration_seconds, 3),

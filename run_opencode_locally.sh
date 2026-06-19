@@ -148,10 +148,10 @@ run_query_locally() {
   local insights_file="$task_output_dir/report.md"
   local run_root="$TMP_ROOT/$query_id"
   local workspace="$run_root/workspace"
-  local opencode_home="$run_root/opencode-home"
-  local xdg_config_home="$run_root/.config"
-  local xdg_cache_home="$run_root/.cache"
-  local xdg_data_home="$run_root/.local/share"
+  local opencode_home="$workspace"
+  local xdg_config_home="$workspace/.config"
+  local xdg_cache_home="$workspace/.cache"
+  local xdg_data_home="$workspace/.local/share"
   local opencode_config="$workspace/.opencode"
   local opencode_skills="$opencode_config/skills"
   local env_info_file="$task_output_dir/env_info.txt"
@@ -271,6 +271,11 @@ EOF
   if [[ -d "$workspace/artifacts" ]]; then
     rm -rf "$task_output_dir/artifacts"
     cp -a "$workspace/artifacts" "$task_output_dir/artifacts"
+  fi
+  if [[ -d "$workspace/.opencode/skills" ]]; then
+    rm -rf "$task_output_dir/.opencode"
+    mkdir -p "$task_output_dir/.opencode"
+    cp -a "$workspace/.opencode/skills" "$task_output_dir/.opencode/skills"
   fi
   if [[ -d "$workspace/mineru_runs" ]]; then
     rm -rf "$task_output_dir/mineru_runs"

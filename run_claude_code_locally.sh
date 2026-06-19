@@ -148,10 +148,10 @@ run_query_locally() {
   local insights_file="$task_output_dir/report.md"
   local run_root="$TMP_ROOT/$query_id"
   local workspace="$run_root/workspace"
-  local claude_home="$run_root/claude-home"
-  local claude_config="$claude_home/.claude"
-  local xdg_config="$run_root/.config"
-  local xdg_cache="$run_root/.cache"
+  local claude_home="$workspace"
+  local claude_config="$workspace/.claude"
+  local xdg_config="$workspace/.config"
+  local xdg_cache="$workspace/.cache"
   local env_info_file="$task_output_dir/env_info.txt"
   local task_start_ts=0
   local task_end_ts=0
@@ -261,6 +261,11 @@ EOF
   if [[ -d "$workspace/artifacts" ]]; then
     rm -rf "$task_output_dir/artifacts"
     cp -a "$workspace/artifacts" "$task_output_dir/artifacts"
+  fi
+  if [[ -d "$workspace/.claude/skills" ]]; then
+    rm -rf "$task_output_dir/.claude"
+    mkdir -p "$task_output_dir/.claude"
+    cp -a "$workspace/.claude/skills" "$task_output_dir/.claude/skills"
   fi
   if [[ -d "$workspace/mineru_runs" ]]; then
     rm -rf "$task_output_dir/mineru_runs"

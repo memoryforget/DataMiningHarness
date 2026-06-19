@@ -143,9 +143,9 @@ run_query_locally() {
   local insights_file="$task_output_dir/report.md"
   local run_root="$TMP_ROOT/$query_id"
   local workspace="$run_root/workspace"
-  local codex_home="$run_root/codex-home"
-  local xdg_config="$run_root/.config"
-  local xdg_cache="$run_root/.cache"
+  local codex_home="$workspace/.codex"
+  local xdg_config="$workspace/.config"
+  local xdg_cache="$workspace/.cache"
   local env_info_file="$task_output_dir/env_info.txt"
   local task_start_ts=0
   local task_end_ts=0
@@ -202,6 +202,8 @@ run_query_locally() {
       pip --version 2>/dev/null || true
       echo "codex=$(command -v codex || true)"
       echo "conda_env=${CONDA_DEFAULT_ENV:-}"
+      echo "codex_home=$CODEX_HOME"
+      echo "codex_sqlite_home=$CODEX_SQLITE_HOME"
       echo "node_activate_script=$NODE_ACTIVATE_SCRIPT"
       echo "mineru_local_api_url=$MINERU_LOCAL_API_URL"
     } > "$env_info_file"
@@ -247,6 +249,11 @@ EOF
   if [[ -d "$workspace/artifacts" ]]; then
     rm -rf "$task_output_dir/artifacts"
     cp -a "$workspace/artifacts" "$task_output_dir/artifacts"
+  fi
+  if [[ -d "$workspace/.codex/skills" ]]; then
+    rm -rf "$task_output_dir/.codex"
+    mkdir -p "$task_output_dir/.codex"
+    cp -a "$workspace/.codex/skills" "$task_output_dir/.codex/skills"
   fi
   if [[ -d "$workspace/mineru_runs" ]]; then
     rm -rf "$task_output_dir/mineru_runs"
