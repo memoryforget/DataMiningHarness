@@ -22,7 +22,7 @@
 
 - 仓库根目录：`./`
 - 工作区根目录：`../`
-- benchmark 根目录：`../InifiteEDA_data_lake/`
+- benchmark 根目录：`../InifiteEDA_data_lake/`，下载方式见 https://modelscope.cn/datasets/Pppiar/DataMiningDataSet/tree/master/InifiteEDA_data_lake
 - Codex 配置目录：`../.codex/`
 - OpenCode 配置目录：`../.opencode/`
 - Claude Code 配置目录：`../.claude/`
