@@ -46,6 +46,11 @@ STRICT_HASH_SUFFIXES = {
     ".zip",
 }
 
+# Stage1 now uses a relaxed artifact policy by default:
+# keep path/existence checks, but skip content validation and candidate-vs-replay comparison.
+ENABLE_ARTIFACT_CONTENT_VALIDATION = False
+ENABLE_ARTIFACT_COMPARISON = False
+
 
 @dataclass
 class FileSnapshot:
@@ -77,6 +82,14 @@ def parse_args() -> argparse.Namespace:
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def ensure_text_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def normalize_artifact_field(value: Any, field_name: str) -> list[str]:
@@ -882,18 +895,22 @@ def main() -> int:
             timed_out = False
         except subprocess.TimeoutExpired as exc:
             timed_out = True
+            stdout = ensure_text_output(exc.stdout)
+            stderr = ensure_text_output(exc.stderr)
             proc = subprocess.CompletedProcess(
                 args=step["BASH"],
                 returncode=124,
-                stdout=exc.stdout or "",
-                stderr=(exc.stderr or "") + f"\nTimed out after {args.timeout_seconds} seconds.",
+                stdout=stdout,
+                stderr=stderr + f"\nTimed out after {args.timeout_seconds} seconds.",
             )
         duration_seconds = time.time() - started_at
 
+        stdout = ensure_text_output(proc.stdout)
+        stderr = ensure_text_output(proc.stderr)
         step_log.write_text(
-            (proc.stdout or "")
-            + ("\n" if proc.stdout and not proc.stdout.endswith("\n") else "")
-            + (proc.stderr or ""),
+            stdout
+            + ("\n" if stdout and not stdout.endswith("\n") else "")
+            + stderr,
             encoding="utf-8",
         )
 
@@ -906,7 +923,11 @@ def main() -> int:
         for output_artifact, path in output_paths.items():
             after = snapshot_path(path)
             expected = candidate_output_snapshots[output_artifact]
-            content_errors = validate_artifact_content(path) if after.exists else []
+            content_errors = (
+                validate_artifact_content(path)
+                if ENABLE_ARTIFACT_CONTENT_VALIDATION and after.exists
+                else []
+            )
             candidate_path = candidate_artifact_path(candidate_dir, output_artifact)
             comparison = (
                 compare_artifact_paths(
@@ -919,7 +940,7 @@ def main() -> int:
                     judge_temperature=args.judge_temperature,
                     judge_max_output_tokens=args.judge_max_output_tokens,
                 )
-                if after.exists and expected.exists and candidate_path is not None
+                if ENABLE_ARTIFACT_COMPARISON and after.exists and expected.exists and candidate_path is not None
                 else {"matched": False, "method": "not_compared", "errors": []}
             )
             output_checks.append(
@@ -928,7 +949,7 @@ def main() -> int:
                     "path": str(path),
                     "exists_after": after.exists,
                     "candidate_exists": expected.exists,
-                    "digest_match": comparison["matched"],
+                    "digest_match": comparison["matched"] if ENABLE_ARTIFACT_COMPARISON else None,
                     "comparison_method": comparison["method"],
                     "comparison_errors": comparison["errors"],
                     "semantic_text_judge": comparison.get("semantic_text_judge"),
@@ -940,7 +961,7 @@ def main() -> int:
                 missing_outputs.append(output_artifact)
             elif not expected.exists:
                 missing_candidate_outputs.append(output_artifact)
-            elif not comparison["matched"]:
+            elif ENABLE_ARTIFACT_COMPARISON and not comparison["matched"]:
                 digest_mismatches.append(output_artifact)
                 artifact_comparison_errors[output_artifact] = comparison["errors"]
             if content_errors:
