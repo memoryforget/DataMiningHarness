@@ -47,6 +47,7 @@ CONDA_ENV_NAME="daagent"
 USE_CONDA_ACTIVATE=1
 USE_NODE_ACTIVATE=1
 FAIL_LOG=""
+MAX_REPORT_RETRIES=2
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -133,9 +134,15 @@ render_prompt() {
   "${render_args[@]}"
 }
 
-run_query_locally() {
+cleanup_query_retry_state() {
+  local query_id="$1"
+  rm -rf "$OUTPUT_DIR/$query_id" "$TMP_ROOT/$query_id"
+}
+
+run_query_attempt() {
   local query_id="$1"
   local prompt_text="$2"
+  local attempt_no="${3:-1}"
   local task_output_dir="$OUTPUT_DIR/$query_id"
   local log_file="$task_output_dir/run.log"
   local status_file="$task_output_dir/exit_code.txt"
@@ -164,16 +171,16 @@ run_query_locally() {
 
   mkdir -p "$task_output_dir"
   rm -rf "$run_root"
+  rm -f "$insights_file"
   mkdir -p "$workspace/artifacts" "$codex_home/sqlite" "$codex_home/skills" "$xdg_config" "$xdg_cache"
   cp -a "$HARNESS_DIR/skills/mineru-pdf" "$codex_home/skills/mineru-pdf"
   cp "$CODEX_HOME_HOST/config.toml" "$codex_home/config.toml"
   cp "$CODEX_HOME_HOST/auth.json" "$codex_home/auth.json"
 
-
   : > "$log_file"
   printf '%s\n' "$prompt_text" > "$prompt_file"
   task_start_ts="$(date +%s)"
-  printf '[%s] start %s\n' "$(date -u +%FT%TZ)" "$query_id" | tee -a "$log_file" >&2
+  printf '[%s] start %s attempt=%s\n' "$(date -u +%FT%TZ)" "$query_id" "$attempt_no" | tee -a "$log_file" >&2
 
   set +e
   (
@@ -271,12 +278,43 @@ EOF
 
   printf '%s\n' "$exit_code" > "$status_file"
   if [[ $exit_code -ne 0 ]]; then
-    printf '%s\n' "$query_id" >> "$FAIL_LOG"
-    printf '[%s] fail %s exit=%s\n' "$(date -u +%FT%TZ)" "$query_id" "$exit_code" | tee -a "$log_file" >&2
+    printf '[%s] fail %s exit=%s attempt=%s\n' "$(date -u +%FT%TZ)" "$query_id" "$exit_code" "$attempt_no" | tee -a "$log_file" >&2
     return "$exit_code"
   fi
 
-  printf '[%s] done %s time=%ss\n' "$(date -u +%FT%TZ)" "$query_id" "$task_elapsed_seconds" | tee -a "$log_file" >&2
+  printf '[%s] done %s time=%ss attempt=%s\n' "$(date -u +%FT%TZ)" "$query_id" "$task_elapsed_seconds" "$attempt_no" | tee -a "$log_file" >&2
+}
+
+run_query_locally() {
+  local query_id="$1"
+  local prompt_text="$2"
+  local exit_code=0
+  local attempt_no=1
+  local max_attempts=$((MAX_REPORT_RETRIES + 1))
+
+  while true; do
+    if run_query_attempt "$query_id" "$prompt_text" "$attempt_no"; then
+      exit_code=0
+    else
+      exit_code=$?
+    fi
+
+    if [[ $exit_code -eq 101 && $attempt_no -lt $max_attempts && ! -s "$OUTPUT_DIR/$query_id/report.md" ]]; then
+      printf '[%s] retry %s because report.md is missing after attempt=%s; clearing task output and tmp workspace\n' \
+        "$(date -u +%FT%TZ)" \
+        "$query_id" \
+        "$attempt_no" >&2
+      cleanup_query_retry_state "$query_id"
+      attempt_no=$((attempt_no + 1))
+      continue
+    fi
+    break
+  done
+
+  if [[ $exit_code -ne 0 ]]; then
+    printf '%s\n' "$query_id" >> "$FAIL_LOG"
+    return "$exit_code"
+  fi
 }
 
 wait_for_slot() {
