@@ -2,5 +2,22 @@
 *.pyo
 *.pyd
 __pycache__/
+*.egg-info/
+dist/
+build/
 
+.venv/
+venv/
+.env
+.env.*
+
+.DS_Store
+.idea/
+.vscode/
+
+*.log
+results/
+outputs/
 backups/
+mineru-api/output/
+mineru-api/mineru_api.env
